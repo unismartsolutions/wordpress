@@ -3,9 +3,16 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-// Add admin menu item
-add_action('admin_menu', 'maintenance_scheduler_menu');
+// Register settings
+function maintenance_scheduler_register_settings() {
+    register_setting('maintenance_scheduler_options', 'maintenance_scheduler_frequency');
+    register_setting('maintenance_scheduler_options', 'maintenance_scheduler_email');
+    register_setting('maintenance_scheduler_options', 'maintenance_scheduler_update_plugins');
+    register_setting('maintenance_scheduler_options', 'maintenance_scheduler_update_themes');
+}
+add_action('admin_init', 'maintenance_scheduler_register_settings');
 
+// Add admin menu item
 function maintenance_scheduler_menu() {
     add_management_page(
         'Maintenance Scheduler',
@@ -15,6 +22,7 @@ function maintenance_scheduler_menu() {
         'maintenance_scheduler_page'
     );
 }
+add_action('admin_menu', 'maintenance_scheduler_menu');
 
 // Add admin styles
 function maintenance_scheduler_admin_styles() {
@@ -52,14 +60,14 @@ function maintenance_scheduler_admin_styles() {
                 border: 1px solid #ddd;
                 border-radius: 4px;
             }
-            .success-message {
-                color: #28a745;
-            }
-            .error-message {
-                color: #dc3545;
-            }
-            .warning-message {
-                color: #ffc107;
+            .success-message { color: #28a745; }
+            .error-message { color: #dc3545; }
+            .warning-message { color: #ffc107; }
+            .schedule-info {
+                background: #e9ecef;
+                padding: 10px 15px;
+                border-radius: 4px;
+                margin: 10px 0;
             }
         </style>
         <?php
@@ -73,28 +81,87 @@ function maintenance_scheduler_page() {
         return;
     }
 
+    // Save settings
+    if (isset($_POST['save_settings']) && check_admin_referer('maintenance_scheduler_settings')) {
+        update_option('maintenance_scheduler_frequency', sanitize_text_field($_POST['frequency']));
+        update_option('maintenance_scheduler_email', sanitize_email($_POST['email']));
+        update_option('maintenance_scheduler_update_plugins', isset($_POST['update_plugins']) ? 1 : 0);
+        update_option('maintenance_scheduler_update_themes', isset($_POST['update_themes']) ? 1 : 0);
+        
+        // Reschedule the maintenance task
+        wp_clear_scheduled_hook('maintenance_scheduler_hook');
+        wp_schedule_event(time(), get_option('maintenance_scheduler_frequency', 'weekly'), 'maintenance_scheduler_hook');
+        
+        echo '<div class="notice notice-success is-dismissible"><p>Settings saved successfully.</p></div>';
+    }
+
+    // Handle manual maintenance run
+    if (isset($_POST['run_maintenance']) && check_admin_referer('run_maintenance_nonce')) {
+        try {
+            $maintenance = new SiteMaintenance();
+            $result = $maintenance->run_maintenance();
+            
+            if ($result) {
+                echo '<div class="notice notice-success is-dismissible"><p>Maintenance completed successfully. Check your email for the detailed report.</p></div>';
+            } else {
+                echo '<div class="notice notice-error is-dismissible"><p>Maintenance encountered some issues. Please check the error log.</p></div>';
+            }
+        } catch (Exception $e) {
+            echo '<div class="notice notice-error is-dismissible"><p>Error: ' . esc_html($e->getMessage()) . '</p></div>';
+        }
+    }
     ?>
+
     <div class="wrap">
         <h1><?php echo esc_html(get_admin_page_title()); ?></h1>
-        
-        <?php
-        // Handle manual maintenance run
-        if (isset($_POST['run_maintenance']) && check_admin_referer('run_maintenance_nonce')) {
-            try {
-                $maintenance = new SiteMaintenance();
-                $result = $maintenance->run_maintenance();
-                
-                if ($result) {
-                    echo '<div class="notice notice-success is-dismissible"><p>Maintenance completed successfully. Check your email for the detailed report.</p></div>';
-                } else {
-                    echo '<div class="notice notice-error is-dismissible"><p>Maintenance encountered some issues. Please check the error log.</p></div>';
-                }
-            } catch (Exception $e) {
-                echo '<div class="notice notice-error is-dismissible"><p>Error: ' . esc_html($e->getMessage()) . '</p></div>';
-            }
-        }
-        ?>
 
+        <!-- Settings Section -->
+        <div class="maintenance-card">
+            <h2>Maintenance Settings</h2>
+            <form method="post">
+                <?php wp_nonce_field('maintenance_scheduler_settings'); ?>
+                
+                <table class="form-table">
+                    <tr>
+                        <th scope="row"><label for="frequency">Schedule Frequency</label></th>
+                        <td>
+                            <select name="frequency" id="frequency">
+                                <option value="hourly" <?php selected(get_option('maintenance_scheduler_frequency'), 'hourly'); ?>>Hourly</option>
+                                <option value="twicedaily" <?php selected(get_option('maintenance_scheduler_frequency'), 'twicedaily'); ?>>Twice Daily</option>
+                                <option value="daily" <?php selected(get_option('maintenance_scheduler_frequency'), 'daily'); ?>>Daily</option>
+                                <option value="weekly" <?php selected(get_option('maintenance_scheduler_frequency'), 'weekly'); ?>>Weekly</option>
+                            </select>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th scope="row"><label for="email">Notification Email</label></th>
+                        <td>
+                            <input type="email" name="email" id="email" value="<?php echo esc_attr(get_option('maintenance_scheduler_email', get_option('admin_email'))); ?>" class="regular-text">
+                        </td>
+                    </tr>
+                    <tr>
+                        <th scope="row">Update Settings</th>
+                        <td>
+                            <label>
+                                <input type="checkbox" name="update_plugins" <?php checked(get_option('maintenance_scheduler_update_plugins'), 1); ?>>
+                                Automatically update plugins
+                            </label>
+                            <br>
+                            <label>
+                                <input type="checkbox" name="update_themes" <?php checked(get_option('maintenance_scheduler_update_themes'), 1); ?>>
+                                Automatically update themes
+                            </label>
+                        </td>
+                    </tr>
+                </table>
+                
+                <p class="submit">
+                    <input type="submit" name="save_settings" class="button button-primary" value="Save Settings">
+                </p>
+            </form>
+        </div>
+
+        <!-- Status Section -->
         <div class="maintenance-card">
             <h2>System Status</h2>
             <div class="maintenance-metrics">
@@ -109,6 +176,7 @@ function maintenance_scheduler_page() {
             </div>
         </div>
 
+        <!-- Manual Run Section -->
         <div class="maintenance-card">
             <h2>Manual Maintenance</h2>
             <p>Click the button below to run maintenance tasks manually. This might take a few minutes.</p>
@@ -118,8 +186,8 @@ function maintenance_scheduler_page() {
             </form>
         </div>
 
+        <!-- Metrics Section -->
         <?php
-        // Display latest metrics if available
         $metrics = get_option('maintenance_metrics');
         if ($metrics): ?>
             <div class="maintenance-card">
@@ -145,6 +213,7 @@ function maintenance_scheduler_page() {
             </div>
         <?php endif; ?>
 
+        <!-- Error Logs Section -->
         <div class="maintenance-card">
             <h2>Recent Error Logs</h2>
             <div class="maintenance-log">
@@ -172,12 +241,6 @@ function maintenance_scheduler_page() {
                 }
                 ?>
             </div>
-        </div>
-
-        <div class="maintenance-card">
-            <h2>Email Settings</h2>
-            <p>Reports are being sent to: <?php echo esc_html(get_option('admin_email')); ?></p>
-            <p>To change this email, use the <a href="<?php echo admin_url('options-general.php'); ?>">WordPress Settings</a> page or add a custom filter.</p>
         </div>
     </div>
     <?php
